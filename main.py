@@ -159,10 +159,13 @@ class EchoText:
         return None
     
     def lookup_product_by_barcode(self, barcode_data):
-        """Fetch product info from OpenFoodFacts database"""
+        """Fetch product info from OpenFoodFacts and FDA databases"""
+        product_info = None
+        
+        # Try OpenFoodFacts first (food products)
         try:
             url = f"https://world.openfoodfacts.org/api/v2/product/{barcode_data}"
-            print(f"🔍 Searching database for barcode: {barcode_data}")
+            print(f"🔍 Searching OpenFoodFacts for barcode: {barcode_data}")
             
             response = requests.get(url, timeout=10)
             
@@ -173,7 +176,7 @@ class EchoText:
                     product = data.get('product', {})
                     
                     # Extract key information
-                    info = {
+                    product_info = {
                         'source': 'OpenFoodFacts',
                         'found': True,
                         'product_name': product.get('product_name', 'Unknown'),
@@ -187,18 +190,48 @@ class EchoText:
                         'image_url': product.get('image_url', '')
                     }
                     
-                    print(f"✅ Product found: {info['product_name']} - {info['brands']}")
-                    return info
-                else:
-                    print("ℹ️  Product not found in database")
-                    return {'source': 'OpenFoodFacts', 'found': False}
-            else:
-                print(f"❌ API request failed with status {response.status_code}")
-                return None
-                
+                    print(f"✅ Product found in OpenFoodFacts: {product_info['product_name']}")
+                    return product_info
         except Exception as e:
-            print(f"❌ Database lookup error: {e}")
-            return None
+            print(f"❌ OpenFoodFacts lookup error: {e}")
+        
+        # Try OpenFDA (medical/drug products)
+        try:
+            # Search in drug labels database
+            url = f"https://api.fda.gov/drug/label.json"
+            params = {'search': f'openfda.upc:"{barcode_data}"', 'limit': 1}
+            print(f"🔍 Searching OpenFDA for barcode: {barcode_data}")
+            
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                results = data.get('results', [])
+                
+                if results:
+                    drug = results[0]
+                    openfda = drug.get('openfda', {})
+                    
+                    product_info = {
+                        'source': 'OpenFDA',
+                        'found': True,
+                        'product_name': openfda.get('brand_name', ['Unknown'])[0] if openfda.get('brand_name') else 'Unknown',
+                        'generic_name': openfda.get('generic_name', [''])[0] if openfda.get('generic_name') else '',
+                        'manufacturer': openfda.get('manufacturer_name', ['Unknown'])[0] if openfda.get('manufacturer_name') else 'Unknown',
+                        'product_type': openfda.get('product_type', [''])[0] if openfda.get('product_type') else 'Medicine',
+                        'purpose': drug.get('purpose', [''])[0] if drug.get('purpose') else '',
+                        'warnings': drug.get('warnings', [''])[0] if drug.get('warnings') else '',
+                        'dosage': drug.get('dosage_and_administration', [''])[0] if drug.get('dosage_and_administration') else '',
+                        'active_ingredient': drug.get('active_ingredient', [''])[0] if drug.get('active_ingredient') else ''
+                    }
+                    
+                    print(f"✅ Medicine found in OpenFDA: {product_info['product_name']}")
+                    return product_info
+        except Exception as e:
+            print(f"❌ OpenFDA lookup error: {e}")
+        
+        print("ℹ️  Product not found in any database")
+        return {'found': False}
     
     def ocr_front_label(self, image_path="front_label.jpg"):
         """Use OCR on front label to get product name/brand"""
@@ -298,28 +331,63 @@ class EchoText:
         
         if product_info and product_info.get('found'):
             # Success! We have database info
-            self.speak(f"Product identified: {product_info['product_name']} by {product_info['brands']}")
+            source = product_info.get('source')
             
-            # Categories
-            if product_info.get('categories'):
-                categories = product_info['categories'].split(',')[0]
-                self.speak(f"Category: {categories}")
+            if source == 'OpenFoodFacts':
+                # Food product
+                self.speak(f"Product identified: {product_info['product_name']} by {product_info['brands']}")
+                
+                # Categories
+                if product_info.get('categories'):
+                    categories = product_info['categories'].split(',')[0]
+                    self.speak(f"Category: {categories}")
+                
+                # Calories (IMPORTANT - always speak this)
+                nutriments = product_info.get('nutriments', {})
+                if 'energy-kcal_100g' in nutriments:
+                    calories = nutriments['energy-kcal_100g']
+                    self.speak(f"Calories: {calories} per 100 grams")
+                
+                # Nutrition grade
+                if product_info.get('nutrition_grade') and product_info['nutrition_grade'] != 'Not available':
+                    self.speak(f"Nutrition grade: {product_info['nutrition_grade']}")
+                
+                # Other nutrition info
+                nutrition_messages = self.format_nutrition_info(nutriments)
+                if nutrition_messages:
+                    for msg in nutrition_messages[:3]:  # Limit to 3 more nutrients
+                        if 'Calories' not in msg:  # Skip calories since we already said it
+                            self.speak(msg)
+                
+                # Allergens (IMPORTANT - always speak this)
+                if product_info.get('allergens'):
+                    allergens = product_info['allergens'].replace('en:', '').replace('-', ' ').replace('_', ' ')
+                    self.speak(f"Warning: Contains allergens: {allergens}")
+                else:
+                    self.speak("No allergen information available")
             
-            # Nutrition grade
-            if product_info.get('nutrition_grade') and product_info['nutrition_grade'] != 'Not available':
-                self.speak(f"Nutrition grade: {product_info['nutrition_grade']}")
-            
-            # Nutrition info
-            nutrition_messages = self.format_nutrition_info(product_info.get('nutriments', {}))
-            if nutrition_messages:
-                self.speak("Nutrition information per 100 grams:")
-                for msg in nutrition_messages[:4]:
-                    self.speak(msg)
-            
-            # Allergens
-            if product_info.get('allergens'):
-                allergens = product_info['allergens'].replace('en:', '').replace('-', ' ')
-                self.speak(f"Contains allergens: {allergens}")
+            elif source == 'OpenFDA':
+                # Medical product
+                self.speak(f"Medicine identified: {product_info['product_name']}")
+                
+                if product_info.get('generic_name'):
+                    self.speak(f"Generic name: {product_info['generic_name']}")
+                
+                if product_info.get('manufacturer'):
+                    self.speak(f"Manufacturer: {product_info['manufacturer']}")
+                
+                if product_info.get('product_type'):
+                    self.speak(f"Type: {product_info['product_type']}")
+                
+                if product_info.get('purpose'):
+                    purpose = product_info['purpose'][:200]  # Limit length
+                    self.speak(f"Purpose: {purpose}")
+                
+                if product_info.get('active_ingredient'):
+                    ingredient = product_info['active_ingredient'][:150]
+                    self.speak(f"Active ingredient: {ingredient}")
+                
+                self.speak("Warning: Always consult the label and healthcare provider for proper usage")
         
         else:
             # Database lookup failed, need to use front label OCR
@@ -328,7 +396,7 @@ class EchoText:
             # Capture front label
             front_frame = self.capture_front_label()
             
-            if front_frame:
+            if front_frame is not None:
                 # Run OCR on front label
                 ocr_result = self.ocr_front_label()
                 
@@ -340,14 +408,37 @@ class EchoText:
                     if brand:
                         self.speak(f"Brand: {brand}")
                     
-                    self.speak("This product is not in our database. Please check the label for detailed information")
+                    self.speak("This product is not in our database")
             else:
                 self.speak("No front label captured. Unable to identify product")
         
+        # Step 3: Try to find expiry date
+        self.speak("Now let's find the expiry date")
+        expiry_frame = self.capture_expiry_area()
+        
+        if expiry_frame is not None:
+            expiry_date = self.ocr_expiry_date()
+            
+            if expiry_date:
+                self.speak(f"Expiry date found: {expiry_date}")
+            else:
+                self.speak("Could not detect expiry date. Please check the label manually")
+        else:
+            self.speak("Expiry date capture skipped")
+        
+        # Step 4: Ask if user wants to scan another product
         print("\n" + "="*50)
         print("✅ Scan Complete")
         print("="*50)
-        self.speak("Scan complete")
+        self.speak("Scan complete. Press any key to scan another product, or ESC to exit")
+        
+        # Wait for user input
+        cv2.namedWindow('EchoText - Press any key to continue, ESC to exit')
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+        
+        # Recursive call to scan again
+        self.run()
 
 if __name__ == "__main__":
     app = EchoText()
