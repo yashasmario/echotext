@@ -1,0 +1,8 @@
+{
+  "name": "EchoText - Blind Assistance Food Scanner",
+  "description": "An accessible food companion that helps visually impaired users identify products, read nutritional labels, and determine if items are safe to consume using advanced AI vision.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

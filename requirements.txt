@@ -1,7 +1,0 @@
-opencv-python
-pytesseract
-regex
-nltk
-pyttsx3
-requests
-pyzbar
